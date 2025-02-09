@@ -24,8 +24,6 @@ def check_suspect_level(message):
         api_version = os.environ["MODEL_API_VERSION"],
     )
 
-    print(os.environ["MODEL_SYS_PROMPT"])
-    print(os.environ["MODEL_USER_PROMPT"])
     response = client.complete(
         messages = [
             SystemMessage(content = os.environ["MODEL_SYS_PROMPT"]),

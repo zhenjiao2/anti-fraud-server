@@ -1,3 +1,5 @@
+import requests
+import random
 import json
 from flask import (Flask, request, jsonify)
 from dotenv import load_dotenv
@@ -46,7 +48,6 @@ def callback():
 
     # Read JSON content from the POST body; expected to be the message content
     data = request.get_json()
-    print(f"Received {data}")
     if not data:
         return jsonify({"ActionStatus": "FAIL", "ErrorInfo": "Missing or invalid JSON content", "ErrorCode": -1}), 400
 
@@ -70,17 +71,15 @@ def callback():
     from_account = data.get("From_Account")
     to_account = data.get("To_Account")
     key = min(from_account, to_account) + '-' + max(from_account, to_account)
-    print(f"{from_account} -> {to_account}: {message_text}")
 
     if callback_command_param == "C2C.CallbackAfterSendMsg":
         add_message(from_account, to_account, message_text)
-        print("add message done.")
         
         # call AI to check if it is related to fraud
         msg = conversations[key].get_lastmessages()
-        print(msg)
+        print(f"[Request to AI]{msg}")
         ai_response = ai.check_suspect_level(msg)
-        print(ai_response)
+        print(f"[AI Response] {ai_response}")
 
         def remove_codeblock_markers(text):
             # Remove the starting marker "```json"
@@ -95,13 +94,41 @@ def callback():
         if data:
             suspect_level = data.get("suspect_level")
             if suspect_level and suspect_level >= 3:
-                notice = f"---\n注意：{data.get("reasoning")}\n建议：{data.get("advice")}\n---"
+                notice = f"---\n注意：{data.get("reasoning")}\n可疑程度：{suspect_level}\n建议：{data.get("advice")}\n---"
+
+                if suspect_level >= 4:
+                    url = "https://console.tim.qq.com/v4/openim/sendmsg"
+                    params = {
+                    "SdkAppid": sdk_appid,  
+                    "identifier": os.environ.get("ADMIN_USER_ID"),
+                    "usersig": os.environ.get("ADMIN_USER_SIG"),
+                    "random": random.randint(1, 10000000),
+                    "contenttype": "json"
+                    }
+                    payload = {
+                        "SyncOtherMachine": 2, 
+                        "To_Account": to_account,
+                        "MsgRandom": random.randint(1, 10000000),
+                        "ForbidCallbackControl":[
+                            "ForbidBeforeSendMsgCallback",
+                            "ForbidAfterSendMsgCallback"], 
+                        "MsgBody": [
+                            {
+                                "MsgType": "TIMTextElem",
+                                "MsgContent": {
+                                    "Text": f"管理员提醒：你在和{from_account}的聊天中对方发送了可疑消息。\n{notice}"
+                                }
+                            }
+                        ]
+                    }                
+                    print(f"Sending admin message to {to_account}:", payload)
+                    response = requests.post(url, params=params, data=json.dumps(payload))
+                    print("Status Code of admin message:", response)
 
 
     elif callback_command_param == "C2C.CallbackBeforeSendMsg":
         if suspect_level >= 3:
-            print(f"Received message from {from_account} to {to_account}:", message_text)
-            print(f"Conversation between {from_account} and {to_account}:", conversations[key].get_lastmessages())
+            print(f"\nReceived message from {from_account} to {to_account}:", message_text)
             response_json = {
                 "ActionStatus": "OK",
                 "ErrorInfo": "",
@@ -119,8 +146,7 @@ def callback():
 
             suspect_level = 0
             notice = ""
-        
-    print(response_json)
+            
     return jsonify(response_json), 200
 
 def add_message(from_account, to_account, message=None):
