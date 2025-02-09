@@ -1,0 +1,6 @@
+Flask==3.0.0
+gunicorn
+python-dotenv
+waitress
+azure-ai-inference
+azure-core
