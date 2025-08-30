@@ -4,3 +4,9 @@ python-dotenv
 waitress
 azure-ai-inference
 azure-core
+httpx
+selenium
+pandas
+langchain
+BeautifulSoup4
+mcp

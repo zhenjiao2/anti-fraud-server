@@ -74,3 +74,8 @@ prompt.txt
 
 # Cert file
 *.pem
+
+# Test file
+config-*.json
+dataset-test*.csv
+*result*.json
