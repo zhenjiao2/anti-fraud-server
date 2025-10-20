@@ -147,7 +147,16 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                 "top_p": 1.0,
                 "max_tokens": 1000,
                 "timeout": 20,
-                "max_retries": 3
+                "max_retries": 3,
+                "payload": {
+                    "model": "gpt-4.1-mini",
+                    "temperature": 0.3,
+                    "top_p": 1.0,
+                    "max_tokens": 1000,
+                    "stream": False,
+                    "frequency_penalty": 0,
+                    "presence_penalty": 0
+                }
             },
             "workflow": {
                 "total_timeout": 120,
@@ -177,6 +186,9 @@ class AzureInferenceLangChainModel(BaseChatModel):
     
     def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
         super().__init__(**kwargs)
+        
+        # 保存配置以供后续使用
+        self._config = config or {}
         
         # 如果传入了配置，使用配置文件的参数，否则使用kwargs
         if config and "azure_ai_inference" in config:
@@ -420,15 +432,31 @@ class AzureInferenceLangChainModel(BaseChatModel):
                     "content": str(msg.content)
                 })
         
-        # 准备请求数据
+        # 准备请求数据 - 从配置文件的payload部分获取参数
+        azure_config = getattr(self, '_config', {}).get("azure_ai_inference", {})
+        config_payload = azure_config.get("payload", {})
+        
+        # 基础请求结构
         payload = {
-            "messages": api_messages,
-            "model": self.model_name,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "max_tokens": self.max_tokens
+            "messages": api_messages
         }
         
+        if config_payload:
+            # 如果配置文件中有payload，直接使用所有配置的参数
+            for key, value in config_payload.items():
+                payload[key] = value
+            logger.debug(f"[Model] 使用配置文件中的payload参数: {list(config_payload.keys())}")
+        else:
+            # 如果没有配置payload，使用实例属性作为默认值
+            payload.update({
+                "model": self.model_name,
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+                "max_tokens": self.max_tokens
+            })
+            logger.debug(f"[Model] 配置文件中未找到payload，使用默认参数: {list(payload.keys())}")
+        
+        # 添加工具（如果有）
         if tools:
             payload["tools"] = tools
         
@@ -548,27 +576,15 @@ class URLExtractorTool(BaseTool):
         all_potential_urls = []
         
         # 更全面的正则表达式模式，提取所有可能的URL
-        url_patterns = [
-            # 完整的HTTP/HTTPS URL
-            r'https?://[a-zA-Z0-9\-._~:/?#[\]@!$&\'()*+,;=%]+',
-            # www开头的域名
-            r'www\.[a-zA-Z0-9\-._~:/?#[\]@!$&\'()*+,;=%]+',
-            # 简单域名/路径格式
-            r'[a-zA-Z0-9][\w\-]*\.[a-zA-Z]{2,}\/[a-zA-Z0-9_\-\/.%?&=]+',
-            # 短链接格式 (如 u.10010.cn/xxx)
-            r'[a-zA-Z0-9]+\.(?:10010\.cn|t\.cn|bit\.ly|tinyurl\.com|short\.link|weibo\.cn|sina\.cn)\/[a-zA-Z0-9_\-]+',
-            # 更广泛的域名匹配
-            r'[a-zA-Z0-9][\w\-]*\.[a-zA-Z]{2,}\/[a-zA-Z0-9_\-]+',
-            # IP地址格式的URL
-            r'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}[:/][a-zA-Z0-9_\-\/.%?&=]*',
-        ]
+        url_patterns = [r'\b(https?://)?([-A-Za-z0-9_]+\.)?[-A-Za-z0-9_]+\.[-A-Za-z0-9_]{2,63}(/-A-Za-z0-9_*)*\b']
         
         # 提取所有匹配的URL字符串
         for pattern in url_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for match in matches:
+            # 使用 finditer 获取 Match 对象，避免因捕获组导致返回元组
+            for m in re.finditer(pattern, text, re.IGNORECASE):
+                full_match = m.group(0)
                 # 清理URL末尾的无效字符
-                cleaned_url = self._clean_url_end(match)
+                cleaned_url = self._clean_url_end(full_match)
                 if cleaned_url and len(cleaned_url) > 3:
                     all_potential_urls.append(cleaned_url)
         
@@ -856,75 +872,32 @@ class LangChainFraudWorkflow(Runnable):
         self.exit_stack = AsyncExitStack()
         self.mcp_tools = []
         
-        # 反欺诈分析的系统提示
-        self.system_prompt = """你是一个反电信诈骗的专家，帮助用户分析对话内容并判断对方的诈骗嫌疑等级（1-5），并提供相应的对策建议。 
-
-# 指引 - **嫌疑等级定义**： 
-
-### **等级 1：低嫌疑**
-* **定义**：对话内容正常，无明显异常行为或敏感词汇，交流目的明确、自然。
-* **判断条件**：
-  * 无诱导下载陌生APP、点击链接或提供账号信息等行为。
-  * 无假冒身份（如公安、银行、快递、法院等权威机构）迹象。
-  * 内容真实自然、符合日常交流习惯。
-  * 没有紧迫性、恐吓性或利益诱导的语气。
-
-### **等级 2：较低嫌疑**
-* **定义**：对话中略有不寻常或异常信息，但尚不具备明显诈骗特征。
-* **判断条件**：
-  * 出现一些轻微的不合逻辑表述或少量敏感词（如"验证码""身份验证"）。
-  * 对方身份稍显模糊、信息来源不明，但未提出任何敏感请求。
-  * 对方语气较为温和，未施加压力。
-  * 仍可能是误会或营销话术，而非明确诈骗意图。
-
-### **等级 3：中等嫌疑**
-* **定义**：对话中包含可疑信息或行为，具备部分诈骗常见特征。
-* **判断条件**：
-  * 对方声称自己是某类机构人员（但没有明确证明）。
-  * 提及如"冻结账户"、"异常交易"、"资金核查"等术语。
-  * 可能诱导用户透露部分信息（如姓名、手机号、银行信息）。
-  * 存在一定紧迫性或情绪引导，但仍留有模糊空间。
-
-### **等级 4：较高嫌疑**
-* **定义**：对话内容高度可疑，已出现多项典型诈骗行为特征。
-* **判断条件**：
-  * 假冒公安、检察院、银行、快递公司等权威机构人员。
-  * 要求用户下载APP、远程控制、点击链接或转账。
-  * 明确制造紧张气氛（如"涉嫌犯罪""立刻配合调查"）。
-  * 信息组织严密，话术套路明显，用户如无专业知识易受骗。
-
-### **等级 5：高嫌疑**
-* **定义**：几乎可以确定为诈骗，具备所有关键诈骗特征。
-* **判断条件**：
-  * 要求提供银行卡、验证码、身份证、支付密码等核心信息。
-  * 涉及资金操作，如"将钱转入安全账户"、"冻结资金审查"等。
-  * 诱导用户立即执行操作，拒绝中断、回拨、第三方确认。
-  * 话术专业、流程清晰、全程操控，明显为预设诈骗流程。
-
-- **分析要点**： 
-1. 是否有索取敏感信息（如身份证号、银行账号、验证码等）。 
-2. 是否对方自称权威机构（如银行、公安局），试图施加压力，并且语气和正常工作人员口吻不符合或者要求加微信、钉钉、下载不明软件等不符合权威机构工作人员规范行为。 
-3. 是否有紧急要求转账或支付。 
-4. 是否明显利用心理威胁或承诺不合理的高额回报。 
-5. 是否包含无法核实的虚假信息或来源。
-6. 短信中若含有链接，尝试访问。若网页内容存在钓鱼、恶意收集信息等风险，提高嫌疑等级；若网页内容正当无嫌疑，则适当降低嫌疑等级。若多次尝试仍无法访问，则视作无效链接，风险可适当降低。如果消息中链接不存在或者无法访问，可以适当降低嫌疑等级。
-
-
-**对策提示**： 
-- 若嫌疑等级为1或2：建议提高警惕，核实信息，但无需过度担忧。 
-- 若嫌疑等级为3或4：保持冷静，切勿提供个人信息或进行支付，可尝试进一步核实对方身份。 
-- 若嫌疑等级为5：立即中断对话，并联系官方渠道（如直接拨打银行或警察的官方电话核实），不要进行任何操作。 
-
-# 输出格式 
-使用以下JSON结构输出结果： 
-```json 
-{ "rating": [1-5], "reasoning": "简要说明嫌疑判断的依据，例如对方所说的特定句子或行为。", "advice": "基于嫌疑等级给出的具体行动建议。", "url_analysis": "如果包含URL，说明网页内容的风险分析" } 
-``` 
-
-# 注意事项
-- 如果不确定，尽量将危险程度设的高一些。
-- 如果消息中包括无法验证的链接，提供警示，提示用户核实前勿点击。
-- 输出必须完整、具体，避免含糊其辞。"""
+        # 反欺诈分析的系统提示 - 从文件加载
+        self.system_prompt = self._load_system_prompt()
+    
+    def _load_system_prompt(self) -> str:
+        """从system_prompt.txt文件加载系统提示内容"""
+        try:
+            # 获取当前脚本所在目录
+            current_dir = Path(__file__).parent
+            prompt_file = current_dir / "system_prompt.txt"
+            
+            # 读取系统提示文件
+            with open(prompt_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            
+            logger.debug(f"[System Prompt] 成功从文件加载系统提示: {prompt_file}")
+            return content
+            
+        except FileNotFoundError:
+            # 如果文件不存在，返回默认的系统提示
+            logger.warning(f"[System Prompt] 未找到system_prompt.txt文件，使用默认提示")
+            return "你是一个反电信诈骗的专家，帮助用户分析对话内容并判断对方的诈骗嫌疑等级（1-5），并提供相应的对策建议。"
+            
+        except Exception as e:
+            # 如果读取文件时出现其他错误，记录错误并返回默认提示
+            logger.error(f"[System Prompt] 加载系统提示文件时出错: {str(e)}，使用默认提示")
+            return "你是一个反电信诈骗的专家，帮助用户分析对话内容并判断对方的诈骗嫌疑等级（1-5），并提供相应的对策建议。"
     
     async def connect_mcp_server(self, server_id: str, command: str, args: List[str], env: Dict[str, str] = None):
         """连接到MCP服务器并注册工具"""

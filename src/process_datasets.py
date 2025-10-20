@@ -10,7 +10,9 @@ import os
 import sys
 import argparse
 from typing import List, Dict, Optional
+import time
 
+start_time = time.time()
 # 导入工作流程序
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -26,49 +28,36 @@ async def process_single_content(workflow: LangChainFraudWorkflow, content: str)
     """
     处理单条content内容，返回rating值
     """
-    try:
-        # 调用工作流
-        result = await workflow.ainvoke({"text": content})
-        
-        # 从最终分析中提取rating
-        final_analysis = result.get("final_analysis", "")
-        
-        # 尝试解析JSON格式的分析结果
+    retry = 0
+    while retry < 3:
         try:
-            # 查找JSON格式的结果
+            # 调用工作流
+            result = await workflow.ainvoke({"text": content})
+            
+            # 从最终分析中提取rating
+            final_analysis = result.get("final_analysis", "")
+            
+            # 尝试解析JSON格式的分析结果
             json_start = final_analysis.find('{')
             json_end = final_analysis.rfind('}') + 1
             
             if json_start != -1 and json_end > json_start:
                 json_str = final_analysis[json_start:json_end]
                 analysis_json = json.loads(json_str)
-                rating = analysis_json.get("rating", 3)  # 默认值3
-                return int(rating)
-        except (json.JSONDecodeError, ValueError):
-            pass
-        
-        # 如果JSON解析失败，尝试从文本中提取rating
-        lines = final_analysis.split('\n')
-        for line in lines:
-            if 'rating' in line.lower() or '等级' in line or '嫌疑' in line:
-                # 查找数字
-                import re
-                numbers = re.findall(r'\d+', line)
-                if numbers:
-                    rating = int(numbers[0])
-                    if 1 <= rating <= 5:
-                        return rating
-        
-        # 如果都找不到，返回默认值3
-        print(f"警告: 无法从分析结果中提取rating值，使用默认值3")
-        print(f"分析结果内容: {final_analysis[:200]}...")  # 显示前200个字符用于调试
-        return 3
-        
-    except Exception as e:
-        print(f"处理content时出错: {str(e)}")
-        return 3  # 默认值
+                rating = analysis_json.get("rating", 0)  # 默认值0
+                if rating > 0:
+                    return rating
+            retry += 1
+            print(f"警告: 分析失败，第{retry}次重试中...")
+            continue
+        except Exception as e:
+            retry += 1
+            print(f"警告: 第{retry}次重试出错，错误信息: {str(e)}")
+            
+    print(f"多次重试后仍无法提取rating值，使用默认值0")
+    return 0
 
-async def process_dataset(file_path: str, workflow: LangChainFraudWorkflow) -> None:
+async def process_dataset(file_path: str, workflow: LangChainFraudWorkflow, model_name: str) -> None:
     """
     处理单个数据集文件
     """
@@ -102,12 +91,12 @@ async def process_dataset(file_path: str, workflow: LangChainFraudWorkflow) -> N
         
         # 每处理10条记录保存一次
         if (index + 1) % 10 == 0:
-            w_file_path = file_path.replace('.csv', '_processed.csv')
+            w_file_path = file_path.replace('.csv', f'_{model_name}_test.csv')
             df.to_csv(w_file_path, index=False, encoding='utf-8')
             print(f"已保存前 {index + 1} 条记录的结果")
     
     # 最终保存
-    w_file_path = file_path.replace('.csv', '_processed.csv')
+    w_file_path = file_path.replace('.csv', f'_{model_name}_test.csv')
     df.to_csv(w_file_path, index=False, encoding='utf-8')
     print(f"数据集 {file_path} 处理完成并已保存")
 
@@ -132,6 +121,10 @@ async def main(config_path: Optional[str] = None, verbose_level: Optional[int] =
     # 初始化工作流，传入配置
     workflow = LangChainFraudWorkflow(config)
     
+    # 从配置中获取模型名称，用于文件命名
+    model_name = config.get("azure_ai_inference", {}).get("model_name", "unknown_model")
+    print(f"使用模型: {model_name}")
+    
     # 数据集文件列表
     if dataset_file:
         # 如果指定了特定文件，只处理该文件
@@ -139,18 +132,19 @@ async def main(config_path: Optional[str] = None, verbose_level: Optional[int] =
     else:
         # 否则使用默认文件列表
         dataset_files = [
-            r".\dataset-test.csv",
-            # r"c:\Users\zhenjiao\Desktop\anti fraud\dataset1-客服.csv",
-            # r"c:\Users\zhenjiao\Desktop\anti fraud\dataset1-贷款.csv",
-            # r"c:\Users\zhenjiao\Desktop\anti fraud\dataset1-冒充熟人.csv",
-            # r"c:\Users\zhenjiao\Desktop\anti fraud\dataset1-公检法.csv"
+            r"datasets/dataset-客服.csv",
+            r"datasets/dataset-贷款.csv",
+            r"datasets/dataset-冒充熟人.csv",
+            r"datasets/dataset-公检法.csv",
+            r"datasets/dataset-正常短信.csv",
+            r"datasets/dataset-广告.csv"
         ]
     
     try:
         # 处理每个数据集
         for file_path in dataset_files:
             if os.path.exists(file_path):
-                await process_dataset(file_path, workflow)
+                await process_dataset(file_path, workflow, model_name)
             else:
                 print(f"文件不存在: {file_path}")
     
@@ -200,3 +194,5 @@ if __name__ == "__main__":
     
     # 运行异步主函数
     asyncio.run(main(config_path=args.config, verbose_level=args.verbose, dataset_file=args.dataset))
+end_time = time.time()
+print(end_time - start_time, "seconds")
