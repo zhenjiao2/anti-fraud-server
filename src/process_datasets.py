@@ -132,10 +132,10 @@ async def main(config_path: Optional[str] = None, verbose_level: Optional[int] =
     else:
         # 否则使用默认文件列表
         dataset_files = [
-            r"datasets/dataset-客服.csv",
-            r"datasets/dataset-贷款.csv",
-            r"datasets/dataset-冒充熟人.csv",
-            r"datasets/dataset-公检法.csv",
+            #r"datasets/dataset-客服.csv",
+            #r"datasets/dataset-贷款.csv",
+            #r"datasets/dataset-冒充熟人.csv",
+            #r"datasets/dataset-公检法.csv",
             r"datasets/dataset-正常短信.csv",
             r"datasets/dataset-广告.csv"
         ]

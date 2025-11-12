@@ -171,6 +171,33 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     if "workflow" not in config:
         config["workflow"] = {}
     
+    # 处理环境变量替换：支持 ${ENV_VAR} 语法
+    def _resolve_env_vars(value):
+        """递归解析配置值中的环境变量引用"""
+        if isinstance(value, str):
+            import re
+            # 匹配 ${VAR_NAME} 格式
+            pattern = r'\$\{([^}]+)\}'
+            
+            def replacer(match):
+                var_name = match.group(1)
+                env_value = os.environ.get(var_name)
+                if env_value is None:
+                    logger.warning(f"[Config] 环境变量 {var_name} 未设置，保持原值")
+                    return match.group(0)
+                return env_value
+            
+            return re.sub(pattern, replacer, value)
+        elif isinstance(value, dict):
+            return {k: _resolve_env_vars(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [_resolve_env_vars(item) for item in value]
+        else:
+            return value
+    
+    # 解析整个配置中的环境变量
+    config = _resolve_env_vars(config)
+    
     # 设置日志级别（如果配置中有的话）
     verbose_level = config.get("workflow", {}).get("verbose_level", 1)
     setup_logging(verbose_level)

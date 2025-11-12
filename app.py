@@ -168,7 +168,7 @@ def callback():
         data = json.loads(remove_codeblock_markers(ai_response))
         # 4. 判断AI返回的内容，根据不同的可疑程度进行不同的处理
         if data:
-            suspect_level = data.get("suspect_level")
+            suspect_level = data.get("rating")
             # 如果可疑程度大于等于3（表示有诈骗可能但不确定，并需要在后续对话中进行）
             # 处理的方式是，如果用户回复了该消息，那就在后面的消息中自动加入notice的内容来进行提醒
             # notice的内容是AI返回的reasoning和advice

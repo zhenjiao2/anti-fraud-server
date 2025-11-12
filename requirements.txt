@@ -10,3 +10,8 @@ pandas
 langchain
 BeautifulSoup4
 mcp
+openpyxl
+pytest
+seaborn
+matplotlib
+scikit-learn
